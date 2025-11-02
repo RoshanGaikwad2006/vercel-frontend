@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -13,6 +13,8 @@ const BookSlots = () => {
   const navigate = useNavigate();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [date, setDate] = useState<Date | undefined>(new Date());
+  const [bookedSlots, setBookedSlots] = useState<Array<{ startTime: string; endTime: string }>>([]);
+  const [isLoadingSlots, setIsLoadingSlots] = useState(false);
   const [formData, setFormData] = useState({
     teamName: "",
     projectTitle: "",
@@ -21,11 +23,68 @@ const BookSlots = () => {
   });
 
   const timeSlots = [
-    { label: "09:00 AM - 11:00 AM", start: "09:00", end: "11:00" },
-    { label: "11:00 AM - 01:00 PM", start: "11:00", end: "13:00" },
+    { label: "08:00 AM - 10:00 AM", start: "08:00", end: "10:00" },
+    { label: "10:00 AM - 12:00 PM", start: "10:00", end: "12:00" },
+    { label: "12:00 PM - 02:00 PM", start: "12:00", end: "14:00" },
     { label: "02:00 PM - 04:00 PM", start: "14:00", end: "16:00" },
     { label: "04:00 PM - 06:00 PM", start: "16:00", end: "18:00" },
   ];
+
+  // Helper function to check if two time slots overlap
+  const timesOverlap = (aStart: string, aEnd: string, bStart: string, bEnd: string): boolean => {
+    return aStart < bEnd && bStart < aEnd;
+  };
+
+  // Helper function to check if a slot is booked
+  const isSlotBooked = (slot: { start: string; end: string }): boolean => {
+    return bookedSlots.some((booked) =>
+      timesOverlap(slot.start, slot.end, booked.startTime, booked.endTime)
+    );
+  };
+
+  // Fetch booked slots when date changes
+  useEffect(() => {
+    const fetchBookedSlots = async () => {
+      if (!date) {
+        setBookedSlots([]);
+        setFormData((prev) => ({ ...prev, timeSlot: "" }));
+        return;
+      }
+
+      // Clear time slot selection when date changes
+      setFormData((prev) => ({ ...prev, timeSlot: "" }));
+
+      try {
+        setIsLoadingSlots(true);
+        const formattedDate = date.toISOString().split('T')[0];
+        const response = await axios.get(`/bookings/available?date=${formattedDate}`);
+        
+        if (response.data && response.data.booked) {
+          setBookedSlots(response.data.booked);
+        } else {
+          setBookedSlots([]);
+        }
+      } catch (error: any) {
+        console.error('Error fetching booked slots:', error);
+        // Don't show error toast, just set empty array
+        setBookedSlots([]);
+      } finally {
+        setIsLoadingSlots(false);
+      }
+    };
+
+    fetchBookedSlots();
+  }, [date]);
+
+  // Filter out booked slots
+  const availableSlots = timeSlots.filter((slot) => !isSlotBooked(slot));
+
+  // Reset time slot selection if the selected slot is no longer available
+  useEffect(() => {
+    if (formData.timeSlot && !availableSlots.find(slot => slot.label === formData.timeSlot)) {
+      setFormData((prev) => ({ ...prev, timeSlot: "" }));
+    }
+  }, [availableSlots, formData.timeSlot]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -75,7 +134,7 @@ const BookSlots = () => {
       const formattedDate = date.toISOString().split('T')[0];
       
       // Find the selected time slot
-      const selectedSlot = timeSlots.find(slot => slot.label === formData.timeSlot);
+      const selectedSlot = availableSlots.find(slot => slot.label === formData.timeSlot);
       
       if (!selectedSlot) {
         throw new Error("Invalid time slot selected");
@@ -99,6 +158,15 @@ const BookSlots = () => {
       if (response.data) {
         toast.success("Booking request submitted successfully! Waiting for coordinator approval.");
         setFormData({ teamName: "", projectTitle: "", description: "", timeSlot: "" });
+        // Refresh booked slots to update availability
+        try {
+          const slotResponse = await axios.get(`/bookings/available?date=${formattedDate}`);
+          if (slotResponse.data && slotResponse.data.booked) {
+            setBookedSlots(slotResponse.data.booked);
+          }
+        } catch (error) {
+          // Silently fail, will refresh on next date change
+        }
         navigate('/'); // Redirect to home page after successful booking
       }
     } catch (error: any) {
@@ -209,20 +277,35 @@ const BookSlots = () => {
 
               <div className="space-y-2">
                 <Label htmlFor="timeSlot">Preferred Time Slot *</Label>
-                <select
-                  id="timeSlot"
-                  className="w-full h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  value={formData.timeSlot}
-                  onChange={(e) => setFormData({ ...formData, timeSlot: e.target.value })}
-                  required
-                >
-                  <option value="">Select a time slot</option>
-                  {timeSlots.map((slot, index) => (
-                    <option key={`slot-${index}`} value={slot.label}>
-                      {slot.label}
-                    </option>
-                  ))}
-                </select>
+                {isLoadingSlots ? (
+                  <div className="w-full h-10 rounded-md border border-input bg-background px-3 py-2 text-sm flex items-center">
+                    <span className="text-muted-foreground">Loading available slots...</span>
+                  </div>
+                ) : (
+                  <select
+                    id="timeSlot"
+                    className="w-full h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={formData.timeSlot}
+                    onChange={(e) => setFormData({ ...formData, timeSlot: e.target.value })}
+                    required
+                  >
+                    <option value="">Select a time slot</option>
+                    {availableSlots.length > 0 ? (
+                      availableSlots.map((slot, index) => (
+                        <option key={`slot-${index}`} value={slot.label}>
+                          {slot.label}
+                        </option>
+                      ))
+                    ) : (
+                      <option value="" disabled>No slots available for this date</option>
+                    )}
+                  </select>
+                )}
+                {date && availableSlots.length === 0 && !isLoadingSlots && (
+                  <p className="text-sm text-muted-foreground">
+                    All slots are booked for this date. Please select another date.
+                  </p>
+                )}
               </div>
 
               {date && (
